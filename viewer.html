@@ -43,6 +43,7 @@
     <select id="animList"></select>
     <button id="playPause">pause</button>
     <label><input id="loop" type="checkbox" checked /> loop</label>
+    <label><input id="follow" type="checkbox" checked /> follow</label>
   </div>
 
   <script type="module">
@@ -83,6 +84,19 @@
     window.__camera = camera;
 
     let mixer = null;
+    let followBone = null;
+    const followTarget = new THREE.Vector3();
+
+    // Root motion in the clips moves the rig metres away from the origin, so
+    // the camera rides along with the hips or the character walks out of frame.
+    function updateFollow(instant) {
+      if (!followBone || !document.getElementById('follow')?.checked) return;
+      followBone.getWorldPosition(followTarget);
+      const offset = camera.position.clone().sub(controls.target);
+      controls.target.lerp(followTarget, instant ? 1 : 0.12);
+      camera.position.copy(controls.target).add(offset);
+      camera.lookAt(controls.target);
+    }
 
     new GLTFLoader().load(modelPath, (gltf) => {
       const root = gltf.scene;
@@ -101,10 +115,16 @@
       controls.target.copy(center).add(new THREE.Vector3(0, size.y * 0.05, 0));
       controls.update();
 
+      followBone = root.getObjectByName('Bip001Pelvis') ?? root;
+
       let triangles = 0;
       const materials = new Set();
       root.traverse((o) => {
         if (!o.isMesh) return;
+        // Skinned meshes keep their bind-pose bounding sphere, so once a clip
+        // with root motion carries the character away from the origin three.js
+        // culls the whole body. Always draw them.
+        o.frustumCulled = false;
         const count = o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count;
         triangles += count / 3;
         for (const m of [].concat(o.material)) materials.add(m.name || '(unnamed)');
@@ -139,8 +159,14 @@
 
         window.__play = play;
         window.__frame = (time) => {
+          // setTime() runs through update(), which multiplies by timeScale, so a
+          // paused mixer would ignore the requested time. Unpause for the jump.
+          const scale = mixer.timeScale;
+          mixer.timeScale = 1;
           mixer.setTime(time);
+          mixer.timeScale = scale;
           root.updateMatrixWorld(true);
+          updateFollow(true);
           renderer.render(scene, camera);
         };
 
@@ -181,6 +207,7 @@
       const dt = clock.getDelta();
       if (mixer) mixer.update(dt);
       controls.update();
+      updateFollow(false);
       renderer.render(scene, camera);
     });
   </script>
