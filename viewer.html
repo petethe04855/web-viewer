@@ -123,33 +123,47 @@
           ${NOISE_GLSL}
           void main() {
             vec3 d = normalize(vDir);
-            float h = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
+            // Screen vertical is a narrow slice of the dome at this FOV, so the
+            // gradient is keyed to elevation (d.y) rather than the whole sphere.
+            float y = d.y;
 
-            vec3 deep  = vec3(0.010, 0.017, 0.040);
-            vec3 mid   = vec3(0.030, 0.080, 0.135);
-            vec3 haze  = vec3(0.075, 0.175, 0.230);
-            vec3 col = mix(haze, mid, smoothstep(0.10, 0.55, h));
-            col = mix(col, deep, smoothstep(0.55, 1.0, h));
+            // Deep space: near-black zenith easing into a dim blue ambient at
+            // the horizon, like the resonator screens.
+            float ambient = 1.0 - smoothstep(-0.02, 0.42, y);
+            vec3 col = mix(vec3(0.014, 0.022, 0.042), vec3(0.060, 0.092, 0.150), ambient);
 
-            float n1 = fbm(d * 2.3 + vec3(0.0, uTime * 0.008, 0.0));
-            float n2 = fbm(d * 4.7 - vec3(1.7, 0.0, 2.3));
-            float cloud = smoothstep(0.34, 0.78, n1 * 0.78 + n2 * 0.42);
-            vec3 cloudCol = mix(vec3(0.18, 0.52, 0.68), vec3(0.34, 0.36, 0.72), n2);
-            col += cloudCol * cloud * 0.95 * smoothstep(0.22, 0.92, h);
+            // Nebula wisps hanging behind the head and shoulders.
+            float band = smoothstep(-0.10, 0.04, y) * (1.0 - smoothstep(0.22, 0.36, y));
+            // Horizontally stretched sampling keeps the wisps streaky, not blobby.
+            vec3 nd = vec3(d.x * 1.5, d.y * 3.0, d.z * 1.5);
+            float n1 = fbm(nd * 1.9 + vec3(0.0, uTime * 0.006, uTime * 0.004));
+            float n2 = fbm(d * 4.6 - vec3(0.7, 1.3, 0.2));
+            float cloud = smoothstep(0.40, 0.80, n1 * 0.82 + n2 * 0.38);
+            vec3 cloudCol = mix(vec3(0.10, 0.30, 0.44), vec3(0.24, 0.24, 0.44), smoothstep(0.35, 0.75, n2));
+            col += cloudCol * cloud * band * 0.62;
+            // a few brighter cyan cores inside the thicker clouds
+            col += vec3(0.14, 0.38, 0.54) * pow(cloud, 3.0) * band * 0.35;
 
-            // faint teal haze hugging the horizon
-            col += vec3(0.10, 0.26, 0.32) * smoothstep(0.62, 0.42, h) * smoothstep(0.18, 0.42, h) * 0.5;
+            // Thin drifting veil just above the fog bank.
+            float veil = 1.0 - smoothstep(-0.16, 0.02, y);
+            float wisp = fbm(d * 1.7 + vec3(uTime * 0.02, 0.0, uTime * 0.01));
+            col += vec3(0.10, 0.16, 0.24) * veil * smoothstep(0.42, 0.85, wisp) * 0.7;
 
-            // sparse star field, drawn per direction cell
-            vec3 sp = d * 240.0;
+            // Ground fog: a pale, luminous bank swallowing the lower screen.
+            float fog = 1.0 - smoothstep(-0.30, 0.01, y);
+            float mistNoise = 0.88 + 0.12 * noise3(d * 6.0 + vec3(0.0, 0.0, uTime * 0.02));
+            col += vec3(0.66, 0.72, 0.79) * pow(fog, 1.6) * 0.95 * mistNoise;
+
+            // Sparse star field, hidden where the fog takes over.
+            vec3 sp = d * 260.0;
             vec3 cell = floor(sp);
             float rnd = hash13(cell);
-            if (rnd > 0.9875) {
+            if (rnd > 0.9825) {
               vec3 f = fract(sp) - 0.5;
-              float size = mix(0.10, 0.32, fract(rnd * 91.7));
-              float twinkle = 0.65 + 0.35 * sin(uTime * 1.8 + rnd * 60.0);
+              float size = mix(0.07, 0.26, fract(rnd * 91.7));
+              float twinkle = 0.6 + 0.4 * sin(uTime * 1.6 + rnd * 60.0);
               float star = smoothstep(size, 0.0, length(f)) * twinkle;
-              col += vec3(0.82, 0.92, 1.0) * star * 1.35;
+              col += vec3(0.80, 0.89, 1.0) * star * 1.5 * smoothstep(-0.05, 0.07, y);
             }
 
             gl_FragColor = vec4(col, 1.0);
@@ -176,28 +190,38 @@
     }
 
     const aura = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: radialTexture('rgba(170,225,255,0.55)', 'rgba(70,150,215,0.18)'),
+      map: radialTexture('rgba(205,230,255,0.55)', 'rgba(95,150,210,0.16)'),
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       transparent: true,
-      opacity: 0.30,
+      opacity: 0.22,
     }));
     aura.scale.setScalar(2.2);
 
     const floorGlow = new THREE.Mesh(
       new THREE.CircleGeometry(1.5, 64),
       new THREE.MeshBasicMaterial({
-        map: radialTexture('rgba(150,220,255,0.55)', 'rgba(40,110,170,0.22)'),
+        map: radialTexture('rgba(225,238,252,0.55)', 'rgba(95,140,195,0.16)'),
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         transparent: true,
-        opacity: 0.55,
+        opacity: 0.35,
       }),
     );
     floorGlow.rotation.x = -Math.PI / 2;
 
+    // Wide, very soft mist billboard that sits behind the character and melts
+    // into the sky's fog bank.
+    const mist = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: radialTexture('rgba(215,232,248,0.5)', 'rgba(105,150,205,0.14)'),
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.13,
+    }));
+
     if (spaceStage) {
-      scene.add(sky, aura, floorGlow);
+      scene.add(sky, aura, floorGlow, mist);
       scene.background = null;
     }
 
@@ -248,6 +272,11 @@
       const back = camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(-0.9);
       aura.position.add(back);
 
+      // Mist sits two metres into the scene, low enough to hug the ground.
+      const away = camera.getWorldDirection(new THREE.Vector3());
+      mist.position.copy(followTarget).addScaledVector(away, 2.0);
+      mist.position.y = followTarget.y - mist.scale.y * 0.18;
+
       floorGlow.position.set(followTarget.x, 0.012, followTarget.z);
     }
 
@@ -269,8 +298,9 @@
       controls.update();
 
       followBone = root.getObjectByName('Bip001Pelvis') ?? root;
-      floorGlow.scale.setScalar(size.y * 0.55);
+      floorGlow.scale.setScalar(size.y * 0.9);
       aura.scale.setScalar(size.y * 1.15);
+      mist.scale.set(size.y * 3.4, size.y * 1.35, 1);
 
       let triangles = 0;
       const materials = new Set();

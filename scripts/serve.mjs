@@ -3,8 +3,8 @@
 //
 //   node scripts/serve.mjs [port]
 import { createServer } from 'node:http';
-import { createReadStream, statSync, writeFileSync } from 'node:fs';
-import { extname, join, normalize, resolve } from 'node:path';
+import { createReadStream, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, extname, join, normalize, resolve } from 'node:path';
 
 const root = resolve(process.argv[3] ?? process.cwd());
 const port = Number(process.argv[2] ?? 5177);
@@ -19,6 +19,7 @@ const TYPES = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.css': 'text/css; charset=utf-8',
+  '.mp4': 'video/mp4',
 };
 
 createServer((req, res) => {
@@ -32,7 +33,10 @@ createServer((req, res) => {
     req.on('end', () => {
       const body = Buffer.concat(chunks).toString('utf8');
       const base64 = body.replace(/^data:image\/\w+;base64,/, '');
-      const target = join(root, 'exports', 'changli-preview.png');
+      // ?name=sub/dir/file.png lets a capture session write numbered frames.
+      const name = new URL(req.url ?? '/', 'http://localhost').searchParams.get('name') ?? 'changli-preview.png';
+      const target = join(root, 'exports', name);
+      mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, Buffer.from(base64, 'base64'));
       res.writeHead(200, { 'content-type': 'text/plain' }).end(target);
     });
@@ -48,9 +52,29 @@ createServer((req, res) => {
   try {
     const info = statSync(path);
     if (info.isDirectory()) throw new Error('is a directory');
+    const type = TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream';
+
+    // Byte ranges keep <video> seekable; without them Chromium can only play
+    // forward from the start of the file.
+    const [startText, endText] = (req.headers.range ?? '').replace(/^bytes=/, '').split('-');
+    if (req.headers.range) {
+      const start = Number(startText) || 0;
+      const end = Math.min(Number(endText) || info.size - 1, info.size - 1);
+      res.writeHead(206, {
+        'content-type': type,
+        'content-range': `bytes ${start}-${end}/${info.size}`,
+        'accept-ranges': 'bytes',
+        'content-length': end - start + 1,
+        'cache-control': 'no-store',
+      });
+      createReadStream(path, { start, end }).pipe(res);
+      return;
+    }
+
     res.writeHead(200, {
-      'content-type': TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream',
+      'content-type': type,
       'content-length': info.size,
+      'accept-ranges': 'bytes',
       'cache-control': 'no-store',
     });
     createReadStream(path).pipe(res);
