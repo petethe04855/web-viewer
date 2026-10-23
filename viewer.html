@@ -51,7 +51,6 @@
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
     const params = new URLSearchParams(location.search);
     const modelPath = params.get('model');
@@ -62,14 +61,11 @@
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.setSize(innerWidth, innerHeight);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
+    renderer.toneMappingExposure = 0.95;
     document.body.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x05080f);
-
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
     const camera = new THREE.PerspectiveCamera(32, innerWidth / innerHeight, 0.001, 1000);
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -225,20 +221,98 @@
       scene.background = null;
     }
 
-    // Cool key + cyan rim, matching the resonator stage lighting.
-    const key = new THREE.DirectionalLight(0xfff3e6, spaceStage ? 1.35 : 1.6);
-    key.position.set(2, 4, 3);
+    // Game-screen lighting: one warm key from the front, a low fill and a warm
+    // ambient. The cool silhouette light is done in the character shader, not
+    // with another directional light, so the cel bands stay clean.
+    const key = new THREE.DirectionalLight(0xffe7cf, 2.9);
+    key.position.set(2.2, 3.4, 3.6);
     scene.add(key);
 
-    const rim = new THREE.DirectionalLight(0x8fd4ff, 2.4);
-    rim.position.set(-3, 2.5, -3.5);
-    scene.add(rim);
-
-    const fill = new THREE.DirectionalLight(0x6f9bd8, 0.7);
+    const fill = new THREE.DirectionalLight(0x93aacc, 0.25);
     fill.position.set(-3, 1.2, 2.5);
     scene.add(fill);
 
-    scene.add(new THREE.AmbientLight(0xa9c6e6, spaceStage ? 0.45 : 0.5));
+    // Warm bounce so the skin under the chin and the red cloth do not go cold.
+    const bounce = new THREE.DirectionalLight(0xffd6b8, 0.25);
+    bounce.position.set(0.4, -0.6, 2.4);
+    scene.add(bounce);
+
+    scene.add(new THREE.AmbientLight(0xd6cec6, 0.28));
+
+    // ---------------------------------------------------------- character
+    // The game shades characters with a hard stepped ramp plus a cyan rim on
+    // the silhouette, so PBR is replaced with a toon material carrying that
+    // rim (and, for the long hair, the blue gradient on its tips).
+
+    // Three.js samples the ramp at dot(N,L) * 0.5 + 0.5, so only the second
+    // half of the texture is ever used. Eight tones keep the cel steps readable
+    // without turning the cloth into flat cut-outs.
+    const toonRamp = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 80, 110, 140, 170, 200, 225, 245, 255]), 16, 1, THREE.RedFormat);
+    toonRamp.minFilter = THREE.NearestFilter;
+    toonRamp.magFilter = THREE.NearestFilter;
+    toonRamp.generateMipmaps = false;
+    toonRamp.needsUpdate = true;
+
+    // Faces read badly with hard cel steps (a stripe appears across the cheek),
+    // so the face/eye use a much finer ramp.
+    const faceShades = [];
+    for (let i = 0; i < 16; i++) faceShades.push(0);
+    for (let i = 0; i < 16; i++) faceShades.push(Math.round(60 + (195 * i) / 15));
+    const faceRamp = new THREE.DataTexture(new Uint8Array(faceShades), 32, 1, THREE.RedFormat);
+    faceRamp.minFilter = THREE.NearestFilter;
+    faceRamp.magFilter = THREE.NearestFilter;
+    faceRamp.generateMipmaps = false;
+    faceRamp.needsUpdate = true;
+
+    function celMaterial(source, name, isHair) {
+      const cel = new THREE.MeshToonMaterial({
+        map: source.map,
+        color: source.color,
+        gradientMap: /Face|Eye/.test(name) ? faceRamp : toonRamp,
+        side: source.side,
+        transparent: source.transparent,
+        opacity: source.opacity,
+        alphaTest: source.alphaTest,
+      });
+      cel.name = name;
+
+      cel.onBeforeCompile = (shader) => {
+        shader.uniforms.uRimColor = { value: new THREE.Color(0xa9dcff) };
+        shader.uniforms.uRimStrength = { value: isHair ? 2.0 : 1.3 };
+        shader.uniforms.uTipColor = { value: new THREE.Color(0x7f96e0) };
+        shader.uniforms.uTipAmount = { value: isHair ? 0.8 : 0.0 };
+        shader.uniforms.uTipLow = { value: 1.2 };
+        shader.uniforms.uTipHigh = { value: 1.5 };
+        cel.userData.shader = shader;
+
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\nvarying float vHairY;')
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvHairY = position.y;');
+
+        shader.fragmentShader = shader.fragmentShader
+          .replace('#include <common>', `#include <common>
+            varying float vHairY;
+            uniform vec3 uRimColor;
+            uniform float uRimStrength;
+            uniform vec3 uTipColor;
+            uniform float uTipAmount;
+            uniform float uTipLow;
+            uniform float uTipHigh;`)
+          .replace('#include <map_fragment>', `#include <map_fragment>
+            // The exported albedo is flatter and less saturated than the in-game grade.
+            float gradeLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+            diffuseColor.rgb = clamp(mix(vec3(gradeLuma), diffuseColor.rgb, 1.7), 0.0, 1.0);
+            // Blue-lavender gradient on the hair tips (geometry-space height).
+            float tip = (1.0 - smoothstep(uTipLow, uTipHigh, vHairY)) * uTipAmount;
+            diffuseColor.rgb = mix(diffuseColor.rgb, uTipColor, tip);`)
+          .replace('#include <opaque_fragment>', `// Cyan rim light on the silhouette, the game's "outline".
+            float rim = 1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0);
+            outgoingLight += uRimColor * pow(rim, 4.0) * uRimStrength;
+            #include <opaque_fragment>`);
+      };
+
+      return cel;
+    }
 
     // Exposed so a headless session can pose the rig and grab frames.
     window.__three = THREE;
@@ -312,7 +386,13 @@
         o.frustumCulled = false;
         const count = o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count;
         triangles += count / 3;
-        for (const m of [].concat(o.material)) materials.add(m.name || '(unnamed)');
+        const sources = [].concat(o.material);
+        const cels = sources.map((m) => {
+          const name = m.name || '(unnamed)';
+          materials.add(name);
+          return celMaterial(m, name, /Hair$/.test(name));
+        });
+        o.material = Array.isArray(o.material) ? cels : cels[0];
       });
 
       const clipNames = (gltf.animations ?? []).map((clip) => clip.name);
