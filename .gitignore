@@ -1,0 +1,66 @@
+# ==========================================
+# 1. Node.js & Web Build
+# ==========================================
+node_modules/
+.next/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ==========================================
+# 2. .NET / C# (ue-runner & build artifacts)
+# ==========================================
+**/bin/
+**/obj/
+*.suo
+*.user
+*.userprefs
+*.ide/
+.vs/
+
+# ==========================================
+# 3. External Git Tools / Cloned Repos
+# ==========================================
+# ป้องกัน nested git repo จาก tools ที่ clone มา
+tools/UEBulkExport/
+
+# ==========================================
+# 4. Logs & Temp Test Files
+# ==========================================
+*.log
+**/*.log
+*anim-test*.txt
+*-err.txt
+**/_completed*.txt
+
+# ==========================================
+# 5. Extracted Raw Assets & Large Game Dumps
+# ==========================================
+# ป้องกัน Git บวมจากไฟล์ raw game textures, hdr, animations ขนาดใหญ่
+exports/
+
+# ==========================================
+# 6. Operating System & Editor Files
+# ==========================================
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment Variables
+.env
+.env.local
+.env.*.local

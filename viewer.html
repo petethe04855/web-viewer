@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Changli — glb viewer</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #14161a; }
+    canvas { display: block; }
+    #hud {
+      position: fixed; inset: auto auto 16px 16px; padding: 8px 12px; border-radius: 8px;
+      font: 12px/1.5 ui-monospace, monospace; color: #cfd6e4; background: rgba(20, 22, 26, .72);
+      border: 1px solid rgba(255,255,255,.12); pointer-events: none;
+    }
+    #loading {
+      position: fixed; inset: 0; display: grid; place-items: center;
+      font: 14px ui-monospace, monospace; color: #cfd6e4;
+    }
+    #animBar {
+      position: fixed; top: 16px; left: 16px; display: flex; gap: 8px; align-items: center;
+      padding: 8px 10px; border-radius: 8px; background: rgba(20, 22, 26, .82);
+      border: 1px solid rgba(255,255,255,.12); font: 12px ui-monospace, monospace; color: #cfd6e4;
+    }
+    #animBar select, #animBar button {
+      background: #1d2129; color: #cfd6e4; border: 1px solid rgba(255,255,255,.18);
+      border-radius: 6px; padding: 3px 6px; font: inherit;
+    }
+    #animBar label { display: flex; gap: 6px; align-items: center; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./node_modules/three/build/three.module.js",
+        "three/addons/": "./node_modules/three/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="loading">loading…</div>
+  <div id="hud"></div>
+  <div id="animBar" hidden>
+    <select id="animList"></select>
+    <button id="playPause">pause</button>
+    <label><input id="loop" type="checkbox" checked /> loop</label>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+    const params = new URLSearchParams(location.search);
+    const modelPath = params.get('model');
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x14161a);
+
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+    const camera = new THREE.PerspectiveCamera(32, innerWidth / innerHeight, 0.001, 1000);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    const key = new THREE.DirectionalLight(0xffffff, 1.6);
+    key.position.set(2, 4, 3);
+    scene.add(key);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+
+    // Exposed so a headless session can pose the rig and grab frames.
+    window.__three = THREE;
+    window.__renderer = renderer;
+    window.__scene = scene;
+    window.__camera = camera;
+
+    let mixer = null;
+
+    new GLTFLoader().load(modelPath, (gltf) => {
+      const root = gltf.scene;
+      window.__model = root;
+      scene.add(root);
+
+      const box = new THREE.Box3().setFromObject(root);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const radius = Math.max(size.x, size.y, size.z);
+
+      camera.position.copy(center).add(new THREE.Vector3(0, size.y * 0.05, radius * 2.1));
+      camera.near = radius / 1000;
+      camera.far = radius * 20;
+      camera.updateProjectionMatrix();
+      controls.target.copy(center).add(new THREE.Vector3(0, size.y * 0.05, 0));
+      controls.update();
+
+      let triangles = 0;
+      const materials = new Set();
+      root.traverse((o) => {
+        if (!o.isMesh) return;
+        const count = o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count;
+        triangles += count / 3;
+        for (const m of [].concat(o.material)) materials.add(m.name || '(unnamed)');
+      });
+
+      const clipNames = (gltf.animations ?? []).map((clip) => clip.name);
+      if (clipNames.length) {
+        mixer = new THREE.AnimationMixer(root);
+        window.__mixer = mixer;
+        window.__clips = gltf.animations;
+
+        const bar = document.getElementById('animBar');
+        const list = document.getElementById('animList');
+        for (const name of clipNames) {
+          const option = document.createElement('option');
+          option.value = name;
+          option.textContent = name;
+          list.append(option);
+        }
+
+        const play = (name, time = 0) => {
+          const clip = gltf.animations.find((c) => c.name === name) ?? gltf.animations[0];
+          mixer.stopAllAction();
+          const action = mixer.clipAction(clip);
+          action.setLoop(document.getElementById('loop').checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+          action.play();
+          mixer.setTime(time);
+          list.value = clip.name;
+          window.__currentClip = clip;
+          return clip;
+        };
+
+        window.__play = play;
+        window.__frame = (time) => {
+          mixer.setTime(time);
+          root.updateMatrixWorld(true);
+          renderer.render(scene, camera);
+        };
+
+        bar.hidden = false;
+        list.addEventListener('change', () => play(list.value));
+
+        const button = document.getElementById('playPause');
+        button.addEventListener('click', () => {
+          const playing = button.textContent === 'pause';
+          mixer.timeScale = playing ? 0 : 1;
+          button.textContent = playing ? 'play' : 'pause';
+        });
+
+        const requested = params.get('anim');
+        const startAt = Number(params.get('t') ?? 0);
+        const preferred = clipNames.includes('Stand1') ? 'Stand1' : clipNames[0];
+        play(requested ?? preferred, startAt);
+        if (params.has('paused')) { mixer.timeScale = 0; button.textContent = 'play'; }
+      }
+
+      document.getElementById('loading').remove();
+      document.getElementById('hud').textContent =
+        `${modelPath.split('/').pop()} · ${Math.round(triangles).toLocaleString()} tris · ` +
+        `${materials.size} materials · ${clipNames.length} animations${clipNames.length ? ' · ' + clipNames[0] : ''}`;
+    }, undefined, (error) => {
+      document.getElementById('loading').textContent = 'load failed: ' + error;
+      console.error(error);
+    });
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    const clock = new THREE.Clock();
+    renderer.setAnimationLoop(() => {
+      const dt = clock.getDelta();
+      if (mixer) mixer.update(dt);
+      controls.update();
+      renderer.render(scene, camera);
+    });
+  </script>
+</body>
+</html>
