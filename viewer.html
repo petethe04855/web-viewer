@@ -53,15 +53,16 @@
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
     const params = new URLSearchParams(location.search);
-    const modelPath = params.get('model');
+    const defaultModel = 'exports/changli/Client/Content/Aki/Character/Role/FemaleXL/ChangLi/R2T1ChangLiMd10011/Model/R2T1ChangLiMd10011_animated.glb';
+    const modelPath = params.get('model') || defaultModel;
     const spaceStage = params.get('bg') !== 'plain';
     if (params.get('ui') === '0') document.body.classList.add('clean');
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.setSize(innerWidth, innerHeight);
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 0.95;
+    renderer.toneMapping = THREE.NeutralToneMapping;
+    renderer.toneMappingExposure = 1.0;
     document.body.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
@@ -126,7 +127,7 @@
             // Deep space: near-black zenith easing into a dim blue ambient at
             // the horizon, like the resonator screens.
             float ambient = 1.0 - smoothstep(-0.02, 0.42, y);
-            vec3 col = mix(vec3(0.014, 0.022, 0.042), vec3(0.060, 0.092, 0.150), ambient);
+            vec3 col = mix(vec3(0.006, 0.010, 0.024), vec3(0.020, 0.034, 0.066), ambient);
 
             // Nebula wisps hanging behind the head and shoulders.
             float band = smoothstep(-0.10, 0.04, y) * (1.0 - smoothstep(0.22, 0.36, y));
@@ -135,20 +136,20 @@
             float n1 = fbm(nd * 1.9 + vec3(0.0, uTime * 0.006, uTime * 0.004));
             float n2 = fbm(d * 4.6 - vec3(0.7, 1.3, 0.2));
             float cloud = smoothstep(0.40, 0.80, n1 * 0.82 + n2 * 0.38);
-            vec3 cloudCol = mix(vec3(0.10, 0.30, 0.44), vec3(0.24, 0.24, 0.44), smoothstep(0.35, 0.75, n2));
-            col += cloudCol * cloud * band * 0.62;
+            vec3 cloudCol = mix(vec3(0.07, 0.20, 0.33), vec3(0.16, 0.17, 0.33), smoothstep(0.35, 0.75, n2));
+            col += cloudCol * cloud * band * 0.35;
             // a few brighter cyan cores inside the thicker clouds
-            col += vec3(0.14, 0.38, 0.54) * pow(cloud, 3.0) * band * 0.35;
+            col += vec3(0.10, 0.28, 0.42) * pow(cloud, 3.0) * band * 0.25;
 
             // Thin drifting veil just above the fog bank.
             float veil = 1.0 - smoothstep(-0.16, 0.02, y);
             float wisp = fbm(d * 1.7 + vec3(uTime * 0.02, 0.0, uTime * 0.01));
-            col += vec3(0.10, 0.16, 0.24) * veil * smoothstep(0.42, 0.85, wisp) * 0.7;
+            col += vec3(0.08, 0.13, 0.20) * veil * smoothstep(0.42, 0.85, wisp) * 0.45;
 
             // Ground fog: a pale, luminous bank swallowing the lower screen.
-            float fog = 1.0 - smoothstep(-0.30, 0.01, y);
+            float fog = 1.0 - smoothstep(-0.42, -0.05, y);
             float mistNoise = 0.88 + 0.12 * noise3(d * 6.0 + vec3(0.0, 0.0, uTime * 0.02));
-            col += vec3(0.66, 0.72, 0.79) * pow(fog, 1.6) * 0.95 * mistNoise;
+            col += vec3(0.62, 0.68, 0.77) * pow(fog, 1.9) * 0.85 * mistNoise;
 
             // Sparse star field, hidden where the fog takes over.
             vec3 sp = d * 260.0;
@@ -190,7 +191,7 @@
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       transparent: true,
-      opacity: 0.22,
+      opacity: 0.1,
     }));
     aura.scale.setScalar(2.2);
 
@@ -213,7 +214,7 @@
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       transparent: true,
-      opacity: 0.13,
+      opacity: 0.05,
     }));
 
     if (spaceStage) {
@@ -221,23 +222,24 @@
       scene.background = null;
     }
 
-    // Game-screen lighting: one warm key from the front, a low fill and a warm
-    // ambient. The cool silhouette light is done in the character shader, not
-    // with another directional light, so the cel bands stay clean.
-    const key = new THREE.DirectionalLight(0xffe7cf, 2.9);
+    // Game-screen lighting: a warm key from the front and an equally warm, much
+    // weaker fill. The game keeps skin shadows pink, not blue, so a cool fill
+    // would grey the face out. The cool silhouette light is done in the
+    // character shader, not with another directional light.
+    const key = new THREE.DirectionalLight(0xfff2e8, 2.6);
     key.position.set(2.2, 3.4, 3.6);
     scene.add(key);
 
-    const fill = new THREE.DirectionalLight(0x93aacc, 0.25);
+    const fill = new THREE.DirectionalLight(0xffe9e4, 0.45);
     fill.position.set(-3, 1.2, 2.5);
     scene.add(fill);
 
     // Warm bounce so the skin under the chin and the red cloth do not go cold.
-    const bounce = new THREE.DirectionalLight(0xffd6b8, 0.25);
+    const bounce = new THREE.DirectionalLight(0xffd6b8, 0.16);
     bounce.position.set(0.4, -0.6, 2.4);
     scene.add(bounce);
 
-    scene.add(new THREE.AmbientLight(0xd6cec6, 0.28));
+    scene.add(new THREE.AmbientLight(0xfff0ea, 0.25));
 
     // ---------------------------------------------------------- character
     // The game shades characters with a hard stepped ramp plus a cyan rim on
@@ -245,30 +247,55 @@
     // rim (and, for the long hair, the blue gradient on its tips).
 
     // Three.js samples the ramp at dot(N,L) * 0.5 + 0.5, so only the second
-    // half of the texture is ever used. Eight tones keep the cel steps readable
-    // without turning the cloth into flat cut-outs.
-    const toonRamp = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 80, 110, 140, 170, 200, 225, 245, 255]), 16, 1, THREE.RedFormat);
+    // half of the texture is ever used. Cloth is shaded almost flat in game (its
+    // folds are painted into the albedo), so the lit half of its ramp sits high
+    // and bunches at the top.
+    const toonRamp = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 150, 180, 205, 225, 238, 245, 250, 255]), 16, 1, THREE.RedFormat);
     toonRamp.minFilter = THREE.NearestFilter;
     toonRamp.magFilter = THREE.NearestFilter;
     toonRamp.generateMipmaps = false;
     toonRamp.needsUpdate = true;
 
-    // Faces read badly with hard cel steps (a stripe appears across the cheek),
-    // so the face/eye use a much finer ramp.
+    // The game barely shades the face: it stays one flat warm tone and the
+    // nose/cheek shadows are painted into the texture. Both halves of the ramp
+    // stay high — a dark first half would drop a hard shadow down the nose.
     const faceShades = [];
-    for (let i = 0; i < 16; i++) faceShades.push(0);
-    for (let i = 0; i < 16; i++) faceShades.push(Math.round(60 + (195 * i) / 15));
+    for (let i = 0; i < 16; i++) faceShades.push(Math.round(232 + (8 * i) / 15));
+    for (let i = 0; i < 16; i++) faceShades.push(Math.round(240 + (15 * i) / 15));
     const faceRamp = new THREE.DataTexture(new Uint8Array(faceShades), 32, 1, THREE.RedFormat);
     faceRamp.minFilter = THREE.NearestFilter;
     faceRamp.magFilter = THREE.NearestFilter;
     faceRamp.generateMipmaps = false;
     faceRamp.needsUpdate = true;
 
-    function celMaterial(source, name, isHair) {
+    // Hair shades down to a deep maroon: the game's hair shadows are darker than
+    // the cloth's, which keeps the coral from turning into flat pink.
+    const hairRamp = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 58, 88, 124, 158, 186, 210, 232, 250]), 16, 1, THREE.RedFormat);
+    hairRamp.minFilter = THREE.NearestFilter;
+    hairRamp.magFilter = THREE.NearestFilter;
+    hairRamp.generateMipmaps = false;
+    hairRamp.needsUpdate = true;
+
+    // Per-material grade, in one place so it can be compared against the game's
+    // own colour readout instead of being buried in the shader.
+    function gradeFor(name) {
+      // tipLow/tipHigh are world-space heights (metres) where the lavender wash
+      // takes over: the bangs fade just under the chin, the long hair lower.
+      if (/Bangs/.test(name)) return { rim: 0.22, grade: 1.0, tint: new THREE.Color(0.85, 0.76, 0.87), cool: 0.4, pale: 0.0, tip: 0.72, tipLow: 1.33, tipHigh: 1.47 };
+      if (/Hair/.test(name)) return { rim: 0.22, grade: 1.0, tint: new THREE.Color(0.85, 0.76, 0.87), cool: 0.4, pale: 0.0, tip: 0.85, tipLow: 1.0, tipHigh: 1.40 };
+      if (/Face/.test(name)) return { rim: 0.2, grade: 1.0, tint: new THREE.Color(1.0, 1.03, 1.07), cool: 0.0, pale: 0.0, tip: 0.0, tipLow: 0, tipHigh: 0 };
+      if (/Eye/.test(name)) return { rim: 0.2, grade: 1.0, tint: 0xffffff, cool: 0.0, pale: 0.0, tip: 0.0, tipLow: 0, tipHigh: 0 };
+      // The dress albedo export is a warm off-white; the game's is ice blue.
+      if (/Down/.test(name)) return { rim: 0.3, grade: 1.0, tint: new THREE.Color(0.98, 1.10, 1.16), cool: 0.0, pale: 0.4, tip: 0.0, tipLow: 0, tipHigh: 0 };
+      return { rim: 0.3, grade: 1.0, tint: 0xffffff, cool: 0.0, pale: 0.45, tip: 0.0, tipLow: 0, tipHigh: 0 };
+    }
+
+    function celMaterial(source, name) {
+      const g = gradeFor(name);
       const cel = new THREE.MeshToonMaterial({
         map: source.map,
         color: source.color,
-        gradientMap: /Face|Eye/.test(name) ? faceRamp : toonRamp,
+        gradientMap: /Face|Eye/.test(name) ? faceRamp : /Hair|Bangs/.test(name) ? hairRamp : toonRamp,
         side: source.side,
         transparent: source.transparent,
         opacity: source.opacity,
@@ -277,12 +304,19 @@
       cel.name = name;
 
       cel.onBeforeCompile = (shader) => {
-        shader.uniforms.uRimColor = { value: new THREE.Color(0xa9dcff) };
-        shader.uniforms.uRimStrength = { value: isHair ? 2.0 : 1.3 };
-        shader.uniforms.uTipColor = { value: new THREE.Color(0x7f96e0) };
-        shader.uniforms.uTipAmount = { value: isHair ? 0.8 : 0.0 };
-        shader.uniforms.uTipLow = { value: 1.2 };
-        shader.uniforms.uTipHigh = { value: 1.5 };
+        // The silhouette light is a faint cool edge: strong enough to lift the
+        // outline off the nebula, weak enough to leave the lavender tips cool.
+        shader.uniforms.uRimColor = { value: new THREE.Color(0xb9d4f6) };
+        shader.uniforms.uRimStrength = { value: g.rim };
+        shader.uniforms.uTipColor = { value: new THREE.Color(0x5a5a80) };
+        shader.uniforms.uTipAmount = { value: g.tip };
+        shader.uniforms.uTipLow = { value: g.tipLow || 1.12 };
+        shader.uniforms.uTipHigh = { value: g.tipHigh || 1.44 };
+        shader.uniforms.uTint = { value: new THREE.Color(g.tint) };
+        shader.uniforms.uGrade = { value: g.grade };
+        shader.uniforms.uCool = { value: g.cool };
+        shader.uniforms.uPale = { value: g.pale };
+        shader.uniforms.uCrimson = { value: /Face|Eye|Hair|Bangs/.test(name) ? 0.0 : 1.0 };
         cel.userData.shader = shader;
 
         shader.vertexShader = shader.vertexShader
@@ -297,15 +331,33 @@
             uniform vec3 uTipColor;
             uniform float uTipAmount;
             uniform float uTipLow;
-            uniform float uTipHigh;`)
+            uniform float uTipHigh;
+            uniform vec3 uTint;
+            uniform float uGrade;
+            uniform float uCool;
+            uniform float uPale;
+            uniform float uCrimson;`)
           .replace('#include <map_fragment>', `#include <map_fragment>
-            // The exported albedo is flatter and less saturated than the in-game grade.
             float gradeLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
-            diffuseColor.rgb = clamp(mix(vec3(gradeLuma), diffuseColor.rgb, 1.7), 0.0, 1.0);
+            diffuseColor.rgb = clamp(mix(vec3(gradeLuma), diffuseColor.rgb, uGrade), 0.0, 1.0);
+            // Near-neutral fabric: lift it so the dress stays pale blue, not grey.
+            float paleMax = max(max(diffuseColor.r, diffuseColor.g), diffuseColor.b);
+            float paleSat = (paleMax - min(min(diffuseColor.r, diffuseColor.g), diffuseColor.b)) / max(paleMax, 1e-4);
+            diffuseColor.rgb *= 1.0 + (1.0 - smoothstep(0.06, 0.24, paleSat)) * uPale;
+            // Shaded cloth picks up the resonator's blue-lavender ambient.
+            diffuseColor.rgb *= mix(vec3(1.0), vec3(0.9, 0.95, 1.09), uCool * (1.0 - gradeLuma));
+            // The crimson sash/ribbons are far more saturated in game than the
+            // exported albedo, which is a soft coral red.
+            float crimson = smoothstep(1.25, 1.7, diffuseColor.r / max(max(diffuseColor.g, diffuseColor.b), 1e-4));
+            diffuseColor.rgb *= mix(vec3(1.0), vec3(1.02, 0.75, 0.60), crimson * uCrimson);
+            diffuseColor.rgb *= uTint;
             // Blue-lavender gradient on the hair tips (geometry-space height).
+            // The wash keeps the strand's own lightness, so the pale braids go
+            // periwinkle while the darker locks stay a deeper violet.
             float tip = (1.0 - smoothstep(uTipLow, uTipHigh, vHairY)) * uTipAmount;
-            diffuseColor.rgb = mix(diffuseColor.rgb, uTipColor, tip);`)
-          .replace('#include <opaque_fragment>', `// Cyan rim light on the silhouette, the game's "outline".
+            vec3 tipCol = uTipColor * (0.55 + 1.4 * gradeLuma);
+            diffuseColor.rgb = mix(diffuseColor.rgb, tipCol, tip);`)
+          .replace('#include <opaque_fragment>', `// Pale cool edge on the silhouette, the game's "outline".
             float rim = 1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0);
             outgoingLight += uRimColor * pow(rim, 4.0) * uRimStrength;
             #include <opaque_fragment>`);
@@ -390,7 +442,7 @@
         const cels = sources.map((m) => {
           const name = m.name || '(unnamed)';
           materials.add(name);
-          return celMaterial(m, name, /Hair$/.test(name));
+          return celMaterial(m, name);
         });
         o.material = Array.isArray(o.material) ? cels : cels[0];
       });
