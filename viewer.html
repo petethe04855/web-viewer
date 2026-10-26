@@ -79,7 +79,10 @@
     renderer.setPixelRatio(renderScale);
     renderer.setSize(innerWidth, innerHeight);
     renderer.toneMapping = THREE.NeutralToneMapping;
-    renderer.toneMappingExposure = 0.97;
+    // Calibrated against the character screen in m2-res_1080p.mp4: at 0.97 the
+    // skin and the coral hair clipped on their way through the tone map (the
+    // game's skin reads #ecb9ad, ours hit 255).
+    renderer.toneMappingExposure = 0.83;
     // The game shades the hair onto the face and the cloth onto the skin, which
     // is most of what makes its colours read so differently from a flat render.
     renderer.shadowMap.enabled = true;
@@ -332,7 +335,7 @@
     // weaker fill. The game keeps skin shadows pink, not blue, so a cool fill
     // would grey the face out. The cool silhouette light is done in the
     // character shader, not with another directional light.
-    const key = new THREE.DirectionalLight(0xfff2e8, 2.6);
+    const key = new THREE.DirectionalLight(0xfff2e8, 2.25);
     key.position.set(2.2, 3.4, 3.6);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
@@ -409,7 +412,10 @@
     // Three.js samples the ramp at dot(N,L) * 0.5 + 0.5, so only the second
     // half of the texture is ever used. Cloth keeps 4 readable cel bands but the
     // lit ones sit high: the dress is bright with deep blue folds, not grey.
-    const toonRamp = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 118, 152, 183, 205, 220, 231, 240, 247]), 16, 1, THREE.RedFormat);
+    // Eight soft steps rather than four hard ones: the game's character shader
+    // shades with a gentle terminator, and the exported maps already carry the
+    // painted shadows, so heavy banding only doubled them up.
+    const toonRamp = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0, 142, 160, 176, 190, 200, 209, 217, 225, 232, 238, 244, 250]), 16, 1, THREE.RedFormat);
     toonRamp.minFilter = THREE.NearestFilter;
     toonRamp.magFilter = THREE.NearestFilter;
     toonRamp.generateMipmaps = false;
@@ -442,8 +448,8 @@
       // hair is only nudged warm — a violet tint here is what turned the whole
       // head pink-mauve. Shadows stay coral (warm multiplier) instead of taking
       // the cloth's blue ambient.
-      if (/Bangs/.test(name)) return { rim: 0.12, grade: 1.0, tint: new THREE.Color(1.04, 0.97, 0.94), cool: 0.45, coolTint: new THREE.Color(1.0, 0.86, 0.90), pale: 0.0, tip: 0.95, tipLow: -0.08, tipHigh: 0.02 };
-      if (/Hair/.test(name)) return { rim: 0.12, grade: 1.0, tint: new THREE.Color(1.04, 0.97, 0.94), cool: 0.45, coolTint: new THREE.Color(1.0, 0.86, 0.90), pale: 0.0, tip: 0.95, tipLow: -0.46, tipHigh: -0.22 };
+      if (/Bangs/.test(name)) return { rim: 0.12, grade: 1.0, tint: new THREE.Color(1.04, 1.11, 1.13), cool: 0.45, coolTint: new THREE.Color(1.0, 0.86, 0.90), pale: 0.0, tip: 0.95, tipLow: -0.08, tipHigh: 0.02, strand: 1.0, pastel: 0.35 };
+      if (/Hair/.test(name)) return { rim: 0.12, grade: 1.0, tint: new THREE.Color(1.04, 1.11, 1.13), cool: 0.45, coolTint: new THREE.Color(1.0, 0.86, 0.90), pale: 0.0, tip: 0.95, tipLow: -0.46, tipHigh: -0.22, strand: 1.0, pastel: 0.35 };
       if (/Face/.test(name)) return { rim: 0.2, grade: 1.0, tint: new THREE.Color(1.0, 1.06, 1.12), cool: 0.0, pale: 0.0, blue: 0.0, tip: 0.0 };
       if (/Eye/.test(name)) return { rim: 0.2, grade: 1.0, tint: 0xffffff, cool: 0.0, pale: 0.0, blue: 0.0, tip: 0.0 };
       // "Up" carries the white dress *and* the skin, so the ice-blue cast is
@@ -452,9 +458,9 @@
       // "Up" carries the dress and the skin, and the skin in the game sits on
       // the cool side even in shadow — pink-mauve, not tan — so it takes a
       // stronger lavender ambient than the rest of the outfit.
-      if (/Up/.test(name)) return { rim: 0.3, grade: 1.0, tint: 0xffffff, cool: 0.75, coolTint: new THREE.Color(0.95, 0.94, 1.14), pale: 0.3, blue: 1.0, tip: 0.0 };
-      if (/Down/.test(name)) return { rim: 0.3, grade: 1.0, tint: 0xffffff, cool: 0.55, coolTint: new THREE.Color(0.88, 0.93, 1.14), pale: 0.3, blue: 1.0, tip: 0.0 };
-      return { rim: 0.3, grade: 1.0, tint: 0xffffff, cool: 0.55, coolTint: new THREE.Color(0.88, 0.93, 1.14), pale: 0.3, blue: 1.0, tip: 0.0 };
+      if (/Up/.test(name)) return { rim: 0.2, grade: 1.0, tint: 0xffffff, cool: 0.6, coolTint: new THREE.Color(0.88, 0.99, 1.13), pale: 0.5, blue: 1.0, tip: 0.0 };
+      if (/Down/.test(name)) return { rim: 0.2, grade: 1.0, tint: 0xffffff, cool: 0.5, coolTint: new THREE.Color(0.92, 0.95, 1.08), pale: 0.4, blue: 1.0, tip: 0.0 };
+      return { rim: 0.2, grade: 1.0, tint: 0xffffff, cool: 0.5, coolTint: new THREE.Color(0.92, 0.95, 1.08), pale: 0.4, blue: 1.0, tip: 0.0 };
     }
 
     // Hair shaders that need the head's height every frame, so the tip band
@@ -529,6 +535,8 @@
         shader.uniforms.uCoolTint = { value: g.coolTint ?? new THREE.Color(0.9, 0.95, 1.09) };
         shader.uniforms.uPale = { value: g.pale };
         shader.uniforms.uMetal = { value: /Up|Down|Cloth/.test(name) ? 1.0 : 0.0 };
+        shader.uniforms.uStrand = { value: g.strand ?? 0 };
+        shader.uniforms.uPastel = { value: g.pastel ?? 0 };
         shader.uniforms.uBlue = { value: g.blue ?? 0 };
         shader.uniforms.uCrimson = { value: /Face|Eye|Hair|Bangs/.test(name) ? 0.0 : 1.0 };
         cel.userData.shader = shader;
@@ -553,9 +561,17 @@
             uniform float uCrimson;
             uniform vec3 uCoolTint;
             uniform float uBlue;
-            uniform float uMetal;`)
+            uniform float uMetal;
+            uniform float uStrand;
+            uniform float uPastel;
+            float vStrand;`)
           .replace('#include <map_fragment>', `#include <map_fragment>
             float gradeLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+            // Pale neutral strands of the hair, read off the raw albedo before
+            // any of the grading below can tint them.
+            float rawMax = max(max(diffuseColor.r, diffuseColor.g), diffuseColor.b);
+            float rawSat = (rawMax - min(min(diffuseColor.r, diffuseColor.g), diffuseColor.b)) / max(rawMax, 1e-4);
+            vStrand = smoothstep(0.60, 0.78, gradeLuma) * (1.0 - smoothstep(0.08, 0.22, rawSat));
             diffuseColor.rgb = clamp(mix(vec3(gradeLuma), diffuseColor.rgb, uGrade), 0.0, 1.0);
             // Near-neutral fabric: lift it so the dress stays pale blue, not grey.
             float paleMax = max(max(diffuseColor.r, diffuseColor.g), diffuseColor.b);
@@ -563,7 +579,7 @@
             float paleMask = (1.0 - smoothstep(0.06, 0.24, paleSat)) * smoothstep(0.35, 0.6, gradeLuma);
             diffuseColor.rgb *= 1.0 + paleMask * uPale;
             // The exported fabric albedo is warm white; the game's is ice blue.
-            diffuseColor.rgb *= mix(vec3(1.0), vec3(0.74, 0.90, 1.16), paleMask * uBlue);
+            diffuseColor.rgb *= mix(vec3(1.0), vec3(1.06, 1.10, 0.92), paleMask * uBlue);
             // Pewter fittings are neutral and mid-tone: the game's hardware is
             // blue-grey, not warm grey. Cloth (high luma) and skin (saturated)
             // fall outside the mask.
@@ -578,6 +594,13 @@
             float crimson = smoothstep(1.25, 1.7, diffuseColor.r / max(max(diffuseColor.g, diffuseColor.b), 1e-4));
             diffuseColor.rgb *= mix(vec3(1.0), vec3(1.02, 0.75, 0.60), crimson * uCrimson);
             diffuseColor.rgb *= uTint;
+            // The hair map is 13% pale grey strands and the game lets them read
+            // as ice against the coral; the ramp and the warm key used to drown
+            // them, so they are restored from the albedo mask instead of from
+            // height. The coral is pulled towards pastel to match #eb8b85.
+            float hairLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+            diffuseColor.rgb = mix(diffuseColor.rgb, mix(vec3(hairLuma), diffuseColor.rgb, 0.72), uPastel);
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.90, 0.91, 0.96), vStrand * uStrand);
             // Lavender tips, banded to the bottom of the strands only: the wash
             // is full below uTipLow and gone above uTipHigh, so the crown and
             // most of each lock stay coral.
