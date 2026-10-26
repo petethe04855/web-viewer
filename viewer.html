@@ -51,6 +51,11 @@
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+    import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
     const params = new URLSearchParams(location.search);
     const defaultModel = 'exports/changli/Client/Content/Aki/Character/Role/FemaleXL/ChangLi/R2T1ChangLiMd10011/Model/R2T1ChangLiMd10011_animated.glb';
@@ -58,8 +63,20 @@
     const spaceStage = params.get('bg') !== 'plain';
     if (params.get('ui') === '0') document.body.classList.add('clean');
 
+    // Supersampling, on purpose: the maps top out at 2048 for the whole body, so
+    // a close-up is limited by what the rasteriser draws, not by the textures.
+    // Rendering at 1.5x and letting the browser downsample is what actually
+    // cleans up the hair strands and the eyelashes. ?ss=1 for weak GPUs, ?ss=2
+    // for stills.
+    const ssFactor = Number(params.get('ss') ?? 1);
+    const renderScale = Math.max(1, Math.min(
+      devicePixelRatio * ssFactor,
+      2.5,
+      // keep the drawing buffer under ~4.2 Mpx whatever the window is
+      Math.sqrt(4.2e6 / (innerWidth * innerHeight)),
+    ));
     const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setPixelRatio(renderScale);
     renderer.setSize(innerWidth, innerHeight);
     renderer.toneMapping = THREE.NeutralToneMapping;
     renderer.toneMappingExposure = 0.97;
@@ -75,6 +92,91 @@
     const camera = new THREE.PerspectiveCamera(32, innerWidth / innerHeight, 0.001, 1000);
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
+
+    // ---------------------------------------------------------------- grade
+    // The game runs its characters through a post stack, so a straight render
+    // never sits on the same colours: a printed-contrast curve, a touch of
+    // bloom on the gold trim and the sky, then the tone map on top.
+    // EffectComposer draws through its own render target, and a plain target
+    // drops the renderer's MSAA: every silhouette comes out stair-stepped even
+    // though the canvas asked for antialiasing. A multisampled, half-float
+    // target keeps the edges smooth and the bloom in HDR.
+    const composerTarget = new THREE.WebGLRenderTarget(innerWidth, innerHeight, {
+      type: THREE.HalfFloatType,
+      samples: 4,
+    });
+    const composer = new EffectComposer(renderer, composerTarget);
+    // The composer keeps its own copy of the pixel ratio, so the supersampled
+    // buffer has to be pushed into it or the post chain would render at 1x and
+    // upscale the result.
+    composer.setPixelRatio(renderer.getPixelRatio());
+    composer.setSize(innerWidth, innerHeight);
+    composer.addPass(new RenderPass(scene, camera));
+
+    const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.22, 0.65, 0.82);
+    composer.addPass(bloom);
+
+    const gradePass = new ShaderPass({
+      uniforms: {
+        tDiffuse: { value: null },
+        uContrast: { value: 1.06 },
+        uSaturation: { value: 1.05 },
+        uVignette: { value: 0.16 },
+        uSharpen: { value: 0.55 },
+        uTexel: { value: new THREE.Vector2(1 / (innerWidth * renderScale), 1 / (innerHeight * renderScale)) },
+      },
+      vertexShader: /* glsl */ `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform sampler2D tDiffuse;
+        uniform float uContrast;
+        uniform float uSaturation;
+        uniform float uVignette;
+        uniform float uSharpen;
+        uniform vec2 uTexel;
+        varying vec2 vUv;
+        void main() {
+          vec3 c = texture2D(tDiffuse, vUv).rgb;
+          // Contrast around mid-grey, then a gentle S-curve so the cel bands
+          // sit apart the way the game's LUT separates them.
+          c = (c - 0.5) * uContrast + 0.5;
+          c = mix(c, c * c * (3.0 - 2.0 * c), 0.18);
+          float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+          c = mix(vec3(luma), c, uSaturation);
+          // Warm the highlights, cool the shadows — the game's grade does this.
+          c *= mix(vec3(0.97, 0.98, 1.03), vec3(1.03, 1.0, 0.98), smoothstep(0.35, 0.9, luma));
+          // The bloom softens the whole frame, and the maps are only 2048 for a
+          // full body, so a small unsharp brings the cel edges back without
+          // inventing halos (the amount is low and clamped).
+          vec3 blur = (
+            texture2D(tDiffuse, vUv + vec2(uTexel.x, 0.0)).rgb +
+            texture2D(tDiffuse, vUv - vec2(uTexel.x, 0.0)).rgb +
+            texture2D(tDiffuse, vUv + vec2(0.0, uTexel.y)).rgb +
+            texture2D(tDiffuse, vUv - vec2(0.0, uTexel.y)).rgb
+          ) * 0.25;
+          c = clamp(c + (c - blur) * uSharpen, 0.0, 1.0);
+          vec2 d = vUv - 0.5;
+          c *= 1.0 - uVignette * dot(d, d);
+          gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+        }
+      `,
+    });
+    // Tone mapping + output colour space, then the grade on the display values
+    // (working in linear HDR here would clip the highlights before the curve).
+    composer.addPass(new OutputPass());
+    composer.addPass(gradePass);
+
+    const render = () => {
+      syncHeadY();
+      composer.render();
+    };
+    window.__render = render;
+    window.__composer = composer;
 
     // ---------------------------------------------------------------- stage
     // A nebula dome, a glow behind the character and a pool of light on the
@@ -257,6 +359,49 @@
     scene.add(new THREE.AmbientLight(0xfff0ea, 0.25));
 
     // ---------------------------------------------------------- character
+    // Inked silhouette. Back faces only, pushed a few millimetres along their
+    // normals: from the front the shell hides behind the character and only its
+    // edge shows, which is the dark line the game draws around everything.
+    function makeOutline(thickness) {
+      const material = new THREE.MeshBasicMaterial({ color: 0x1c1016, side: THREE.BackSide });
+      material.onBeforeCompile = (shader) => {
+        shader.uniforms.uOutline = { value: thickness };
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\nuniform float uOutline;')
+          // A fixed world-space shell is a thick line in a close-up and a hairline
+          // from three metres away. Scaling the push with view distance keeps
+          // the ink about the same weight in pixels, the way the game's
+          // screen-space outline does.
+          .replace(
+            '#include <begin_vertex>',
+            `#include <begin_vertex>
+              float oDist = -(modelViewMatrix * vec4(position, 1.0)).z;
+              float oPush = uOutline * clamp(oDist / 0.42, 0.55, 3.0);
+              transformed += normal * oPush;`,
+          )
+          // The shell grows along the surface normal, so it also creeps towards
+          // the camera and paints over anything sitting within that distance:
+          // stacked thin layers (the brooch 0.9 mm off the cloth, the inner
+          // shell of the dress) came out with black rags on them. Sinking the
+          // shell by most of its own thickness puts it behind those layers again
+          // while the silhouette, which only competes with the background, is
+          // unaffected.
+          .replace(
+            'gl_Position = projectionMatrix * mvPosition;',
+            'mvPosition.z -= oPush * 0.85;\n\tgl_Position = projectionMatrix * mvPosition;',
+          );
+      };
+      return material;
+    }
+
+    // Hair cards are thin and numerous, so the same thickness that suits the
+    // dress turns the fringe into a black mass.
+    const outlineMaterial = makeOutline(0.0016);
+    const hairOutlineMaterial = makeOutline(0.0007);
+    // The face is a single shell with a mouth cavity, so its hull is barely
+    // thicker than the surface — just enough to ink the jaw and the lips.
+    const faceOutlineMaterial = makeOutline(0.0003);
+
     // The game shades characters with a hard stepped ramp plus a cyan rim on
     // the silhouette, so PBR is replaced with a toon material carrying that
     // rim (and, for the long hair, the blue gradient on its tips).
@@ -293,18 +438,28 @@
     // Per-material grade, in one place so it can be compared against the game's
     // own colour readout instead of being buried in the shader.
     function gradeFor(name) {
-      // tipLow/tipHigh are world-space heights (metres) where the lavender wash
-      // takes over: the bangs fade just under the chin, the long hair lower.
-      if (/Bangs/.test(name)) return { rim: 0.22, grade: 1.15, tint: new THREE.Color(0.83, 0.75, 0.85), cool: 1.0, coolTint: new THREE.Color(0.86, 0.94, 1.28), pale: 0.0, tip: 0.72, tipLow: 1.33, tipHigh: 1.47 };
-      if (/Hair/.test(name)) return { rim: 0.22, grade: 1.15, tint: new THREE.Color(0.83, 0.75, 0.85), cool: 1.0, coolTint: new THREE.Color(0.86, 0.94, 1.28), pale: 0.0, tip: 0.85, tipLow: 1.0, tipHigh: 1.40 };
-      if (/Face/.test(name)) return { rim: 0.2, grade: 1.0, tint: new THREE.Color(1.0, 1.06, 1.12), cool: 0.0, pale: 0.0, blue: 0.0, tip: 0.0, tipLow: 0, tipHigh: 0 };
-      if (/Eye/.test(name)) return { rim: 0.2, grade: 1.0, tint: 0xffffff, cool: 0.0, pale: 0.0, blue: 0.0, tip: 0.0, tipLow: 0, tipHigh: 0 };
+      // Coral hair: the exported albedo is already the right salmon, so the
+      // hair is only nudged warm — a violet tint here is what turned the whole
+      // head pink-mauve. Shadows stay coral (warm multiplier) instead of taking
+      // the cloth's blue ambient.
+      if (/Bangs/.test(name)) return { rim: 0.12, grade: 1.0, tint: new THREE.Color(1.04, 0.97, 0.94), cool: 0.45, coolTint: new THREE.Color(1.0, 0.86, 0.90), pale: 0.0, tip: 0.95, tipLow: -0.08, tipHigh: 0.02 };
+      if (/Hair/.test(name)) return { rim: 0.12, grade: 1.0, tint: new THREE.Color(1.04, 0.97, 0.94), cool: 0.45, coolTint: new THREE.Color(1.0, 0.86, 0.90), pale: 0.0, tip: 0.95, tipLow: -0.46, tipHigh: -0.22 };
+      if (/Face/.test(name)) return { rim: 0.2, grade: 1.0, tint: new THREE.Color(1.0, 1.06, 1.12), cool: 0.0, pale: 0.0, blue: 0.0, tip: 0.0 };
+      if (/Eye/.test(name)) return { rim: 0.2, grade: 1.0, tint: 0xffffff, cool: 0.0, pale: 0.0, blue: 0.0, tip: 0.0 };
       // "Up" carries the white dress *and* the skin, so the ice-blue cast is
       // applied by a low-saturation mask in the shader (uBlue) rather than a
       // flat tint that would turn the arms blue too.
-      if (/Down/.test(name)) return { rim: 0.3, grade: 1.0, tint: 0xffffff, cool: 0.55, coolTint: new THREE.Color(0.88, 0.93, 1.14), pale: 0.3, blue: 1.0, tip: 0.0, tipLow: 0, tipHigh: 0 };
-      return { rim: 0.3, grade: 1.0, tint: 0xffffff, cool: 0.55, coolTint: new THREE.Color(0.88, 0.93, 1.14), pale: 0.3, blue: 1.0, tip: 0.0, tipLow: 0, tipHigh: 0 };
+      // "Up" carries the dress and the skin, and the skin in the game sits on
+      // the cool side even in shadow — pink-mauve, not tan — so it takes a
+      // stronger lavender ambient than the rest of the outfit.
+      if (/Up/.test(name)) return { rim: 0.3, grade: 1.0, tint: 0xffffff, cool: 0.75, coolTint: new THREE.Color(0.95, 0.94, 1.14), pale: 0.3, blue: 1.0, tip: 0.0 };
+      if (/Down/.test(name)) return { rim: 0.3, grade: 1.0, tint: 0xffffff, cool: 0.55, coolTint: new THREE.Color(0.88, 0.93, 1.14), pale: 0.3, blue: 1.0, tip: 0.0 };
+      return { rim: 0.3, grade: 1.0, tint: 0xffffff, cool: 0.55, coolTint: new THREE.Color(0.88, 0.93, 1.14), pale: 0.3, blue: 1.0, tip: 0.0 };
     }
+
+    // Hair shaders that need the head's height every frame, so the tip band
+    // follows the body instead of the world (a crouch would flood the crown).
+    const tipShaders = [];
 
     function celMaterial(source, name) {
       const g = gradeFor(name);
@@ -318,28 +473,69 @@
         alphaTest: source.alphaTest,
       });
       cel.name = name;
+      // Fabric and hair are seen at grazing angles most of the time; without
+      // anisotropic filtering the 2048 maps smear into mush near the hem.
+      if (cel.map) cel.map.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+      // The five-point star on the sternum is a dark decal, but the export
+      // flattened its alpha channel: the transparent surround came through as
+      // solid red, which is why the chest read as a red gem the game does not
+      // have. The plate is tiny (~5 cm), so the surround is recovered from the
+      // albedo itself — anything that is either saturated red or near-white is
+      // backdrop, everything else is the sparkle — and the sparkle is drawn in
+      // the game's ink navy.
+      if (/XingStar/.test(name)) {
+        cel.transparent = true;
+        cel.onBeforeCompile = (shader) => {
+          shader.uniforms.uSparkle = { value: new THREE.Color(0x171c3d) };
+          shader.fragmentShader = shader.fragmentShader
+            .replace('#include <common>', '#include <common>\nuniform vec3 uSparkle;')
+            .replace('#include <map_fragment>', `#include <map_fragment>
+              float sparkLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+              float sparkRed = diffuseColor.r / max(max(diffuseColor.g, diffuseColor.b), 1e-4);
+              // Red or near-white is backdrop; what is left fades with luma so
+              // only the dark core of the sparkle stays solid, the way the
+              // game's thin ink line reads.
+              float backdrop = max(
+                smoothstep(1.5, 2.2, sparkRed),
+                smoothstep(0.82, 0.95, sparkLuma)
+              );
+              float ink = 1.0 - smoothstep(0.28, 0.62, sparkLuma);
+              diffuseColor.rgb = uSparkle;
+              diffuseColor.a *= (1.0 - backdrop) * ink;`);
+        };
+        return cel;
+      }
 
       cel.onBeforeCompile = (shader) => {
         // The silhouette light is a faint cool edge: strong enough to lift the
         // outline off the nebula, weak enough to leave the lavender tips cool.
         shader.uniforms.uRimColor = { value: new THREE.Color(0xb9d4f6) };
         shader.uniforms.uRimStrength = { value: g.rim };
-        shader.uniforms.uTipColor = { value: new THREE.Color(0x424a9e) };
+        shader.uniforms.uTipColor = { value: new THREE.Color(0x5f68c8) };
         shader.uniforms.uTipAmount = { value: g.tip };
-        shader.uniforms.uTipLow = { value: g.tipLow || 1.12 };
-        shader.uniforms.uTipHigh = { value: g.tipHigh || 1.44 };
+        // tipLow/tipHigh are heights relative to the head joint (metres) where
+        // the lavender wash takes over, read off the strand ends — the exported
+        // albedo has no lavender gradient of its own.
+        shader.uniforms.uTipLow = { value: g.tipLow ?? 0 };
+        shader.uniforms.uTipHigh = { value: g.tipHigh ?? 0 };
+        // Head height, so the band survives crouches and jumps; it stays level
+        // with the world rather than following the bone's roll.
+        shader.uniforms.uHeadY = { value: 1.4 };
+        if (g.tip > 0) tipShaders.push(shader);
         shader.uniforms.uTint = { value: new THREE.Color(g.tint) };
         shader.uniforms.uGrade = { value: g.grade };
         shader.uniforms.uCool = { value: g.cool };
         shader.uniforms.uCoolTint = { value: g.coolTint ?? new THREE.Color(0.9, 0.95, 1.09) };
         shader.uniforms.uPale = { value: g.pale };
+        shader.uniforms.uMetal = { value: /Up|Down|Cloth/.test(name) ? 1.0 : 0.0 };
         shader.uniforms.uBlue = { value: g.blue ?? 0 };
         shader.uniforms.uCrimson = { value: /Face|Eye|Hair|Bangs/.test(name) ? 0.0 : 1.0 };
         cel.userData.shader = shader;
 
         shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', '#include <common>\nvarying float vHairY;')
-          .replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvHairY = position.y;');
+          .replace('#include <common>', '#include <common>\nvarying float vHairY;\nuniform float uHeadY;')
+          .replace('#include <skinning_vertex>', '#include <skinning_vertex>\n\tvHairY = transformed.y - uHeadY;');
 
         shader.fragmentShader = shader.fragmentShader
           .replace('#include <common>', `#include <common>
@@ -356,7 +552,8 @@
             uniform float uPale;
             uniform float uCrimson;
             uniform vec3 uCoolTint;
-            uniform float uBlue;`)
+            uniform float uBlue;
+            uniform float uMetal;`)
           .replace('#include <map_fragment>', `#include <map_fragment>
             float gradeLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
             diffuseColor.rgb = clamp(mix(vec3(gradeLuma), diffuseColor.rgb, uGrade), 0.0, 1.0);
@@ -367,6 +564,13 @@
             diffuseColor.rgb *= 1.0 + paleMask * uPale;
             // The exported fabric albedo is warm white; the game's is ice blue.
             diffuseColor.rgb *= mix(vec3(1.0), vec3(0.74, 0.90, 1.16), paleMask * uBlue);
+            // Pewter fittings are neutral and mid-tone: the game's hardware is
+            // blue-grey, not warm grey. Cloth (high luma) and skin (saturated)
+            // fall outside the mask.
+            float metalMask = (1.0 - smoothstep(0.05, 0.20, paleSat))
+              * smoothstep(0.28, 0.42, gradeLuma)
+              * (1.0 - smoothstep(0.80, 0.92, gradeLuma));
+            diffuseColor.rgb *= mix(vec3(1.0), vec3(0.56, 0.69, 1.00), metalMask * uMetal);
             // Shaded cloth picks up the resonator's blue-lavender ambient.
             diffuseColor.rgb *= mix(vec3(1.0), uCoolTint, uCool * (1.0 - gradeLuma));
             // The crimson sash/ribbons are far more saturated in game than the
@@ -374,11 +578,14 @@
             float crimson = smoothstep(1.25, 1.7, diffuseColor.r / max(max(diffuseColor.g, diffuseColor.b), 1e-4));
             diffuseColor.rgb *= mix(vec3(1.0), vec3(1.02, 0.75, 0.60), crimson * uCrimson);
             diffuseColor.rgb *= uTint;
-            // Blue-lavender gradient on the hair tips (geometry-space height).
-            // The wash keeps the strand's own lightness, so the pale braids go
-            // periwinkle while the darker locks stay a deeper violet.
-            float tip = (1.0 - smoothstep(uTipLow, uTipHigh, vHairY)) * uTipAmount;
-            vec3 tipCol = uTipColor * (0.5 + 1.2 * gradeLuma);
+            // Lavender tips, banded to the bottom of the strands only: the wash
+            // is full below uTipLow and gone above uTipHigh, so the crown and
+            // most of each lock stay coral.
+            float tipMask = 1.0 - smoothstep(uTipLow, uTipHigh, vHairY);
+            float tip = tipMask * uTipAmount;
+            // Pale ends are nearly white, so the violet has to be pushed hard
+            // before lighting floods it back out.
+            vec3 tipCol = uTipColor * (0.6 + 1.0 * gradeLuma);
             diffuseColor.rgb = mix(diffuseColor.rgb, tipCol, tip);`)
           .replace('#include <opaque_fragment>', `// Pale cool edge on the silhouette, the game's "outline".
             float rim = 1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0);
@@ -397,7 +604,18 @@
 
     let mixer = null;
     let followBone = null;
+    let headBone = null;
+    const headPoint = new THREE.Vector3();
     const followTarget = new THREE.Vector3();
+
+    // The lavender band is measured down from the head joint, which is the only
+    // stable reference across clips: a run crouches 13 cm, a burst lifts the
+    // whole rig 2.3 m off the floor.
+    function syncHeadY() {
+      if (!headBone || !tipShaders.length) return;
+      headBone.getWorldPosition(headPoint);
+      for (const shader of tipShaders) shader.uniforms.uHeadY.value = headPoint.y;
+    }
 
     // Root motion in the clips moves the rig metres away from the origin, so
     // the camera rides along with the hips or the character walks out of frame.
@@ -447,6 +665,7 @@
       controls.update();
 
       followBone = root.getObjectByName('Bip001Pelvis') ?? root;
+      headBone = root.getObjectByName('Bip001Head') ?? null;
       floorGlow.scale.setScalar(size.y * 0.9);
       aura.scale.setScalar(size.y * 1.15);
       mist.scale.set(size.y * 3.4, size.y * 1.35, 1);
@@ -470,6 +689,25 @@
           return celMaterial(m, name);
         });
         o.material = Array.isArray(o.material) ? cels : cels[0];
+
+        // Inverted hull: the same geometry, back faces only, pushed out along
+        // the normals. Skinning is applied by three as usual, so it follows the
+        // rig. The face, eyes and the small star skip it: their shells are
+        // larger than the feature they wrap and cover the mouth and irises.
+        const matName = sources[0].name || '';
+        if (/Eye|XingStar/.test(matName)) return;
+        const hull = /Hair|Bangs/.test(matName) ? hairOutlineMaterial : /Face/.test(matName) ? faceOutlineMaterial : outlineMaterial;
+        const shell = o.isSkinnedMesh ? new THREE.SkinnedMesh(o.geometry, hull) : new THREE.Mesh(o.geometry, hull);
+        if (o.isSkinnedMesh) {
+          shell.bind(o.skeleton, o.bindMatrix);
+          shell.bindMode = o.bindMode;
+        }
+        shell.name = o.name + '_outline';
+        shell.frustumCulled = false;
+        shell.castShadow = false;
+        shell.receiveShadow = false;
+        shell.renderOrder = -1;
+        o.parent.add(shell);
       });
 
       const clipNames = (gltf.animations ?? []).map((clip) => clip.name);
@@ -510,7 +748,7 @@
           root.updateMatrixWorld(true);
           updateFollow(true);
           updateStage(time, true);
-          renderer.render(scene, camera);
+          render();
         };
 
         bar.hidden = false;
@@ -543,6 +781,9 @@
       camera.aspect = innerWidth / innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(innerWidth, innerHeight);
+      composer.setSize(innerWidth, innerHeight);
+      const ratio = renderer.getPixelRatio();
+      gradePass.uniforms.uTexel.value.set(1 / (innerWidth * ratio), 1 / (innerHeight * ratio));
     });
 
     const clock = new THREE.Clock();
@@ -553,7 +794,7 @@
       controls.update();
       updateFollow(false);
       updateStage(time, false);
-      renderer.render(scene, camera);
+      render();
     });
   </script>
 </body>
